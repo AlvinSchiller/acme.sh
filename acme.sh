@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-VER=3.0.2
+VER=3.0.5
 
 PROJECT_NAME="acme.sh"
 
@@ -20,8 +20,6 @@ _SUB_FOLDER_DEPLOY="deploy"
 
 _SUB_FOLDERS="$_SUB_FOLDER_DNSAPI $_SUB_FOLDER_DEPLOY $_SUB_FOLDER_NOTIFY"
 
-CA_LETSENCRYPT_V1="https://acme-v01.api.letsencrypt.org/directory"
-
 CA_LETSENCRYPT_V2="https://acme-v02.api.letsencrypt.org/directory"
 CA_LETSENCRYPT_V2_TEST="https://acme-staging-v02.api.letsencrypt.org/directory"
 
@@ -29,10 +27,13 @@ CA_BUYPASS="https://api.buypass.com/acme/directory"
 CA_BUYPASS_TEST="https://api.test4.buypass.no/acme/directory"
 
 CA_ZEROSSL="https://acme.zerossl.com/v2/DV90"
-_ZERO_EAB_ENDPOINT="http://api.zerossl.com/acme/eab-credentials-email"
+_ZERO_EAB_ENDPOINT="https://api.zerossl.com/acme/eab-credentials-email"
 
 CA_SSLCOM_RSA="https://acme.ssl.com/sslcom-dv-rsa"
 CA_SSLCOM_ECC="https://acme.ssl.com/sslcom-dv-ecc"
+
+CA_GOOGLE="https://dv.acme-v02.api.pki.goog/directory"
+CA_GOOGLE_TEST="https://dv.acme-v02.test-api.pki.goog/directory"
 
 DEFAULT_CA=$CA_ZEROSSL
 DEFAULT_STAGING_CA=$CA_LETSENCRYPT_V2_TEST
@@ -44,9 +45,11 @@ LetsEncrypt.org_test,letsencrypt_test,letsencrypttest
 BuyPass.com,buypass
 BuyPass.com_test,buypass_test,buypasstest
 SSL.com,sslcom
+Google.com,google
+Google.com_test,googletest,google_test
 "
 
-CA_SERVERS="$CA_ZEROSSL,$CA_LETSENCRYPT_V2,$CA_LETSENCRYPT_V2_TEST,$CA_BUYPASS,$CA_BUYPASS_TEST,$CA_SSLCOM_RSA"
+CA_SERVERS="$CA_ZEROSSL,$CA_LETSENCRYPT_V2,$CA_LETSENCRYPT_V2_TEST,$CA_BUYPASS,$CA_BUYPASS_TEST,$CA_SSLCOM_RSA,$CA_GOOGLE,$CA_GOOGLE_TEST"
 
 DEFAULT_USER_AGENT="$PROJECT_NAME/$VER ($PROJECT)"
 
@@ -80,14 +83,15 @@ NGINX="nginx:"
 NGINX_START="#ACME_NGINX_START"
 NGINX_END="#ACME_NGINX_END"
 
-BEGIN_CSR="-----BEGIN CERTIFICATE REQUEST-----"
-END_CSR="-----END CERTIFICATE REQUEST-----"
+BEGIN_CSR="-----BEGIN [NEW ]\{0,4\}CERTIFICATE REQUEST-----"
+END_CSR="-----END [NEW ]\{0,4\}CERTIFICATE REQUEST-----"
 
 BEGIN_CERT="-----BEGIN CERTIFICATE-----"
 END_CERT="-----END CERTIFICATE-----"
 
 CONTENT_TYPE_JSON="application/jose+json"
 RENEW_SKIP=2
+CODE_DNS_MANUAL=3
 
 B64CONF_START="__ACME_BASE64__START_"
 B64CONF_END="__ACME_BASE64__END_"
@@ -144,6 +148,8 @@ NOTIFY_MODE_CERT=1
 
 NOTIFY_MODE_DEFAULT=$NOTIFY_MODE_BULK
 
+_BASE64_ENCODED_CFGS="Le_PreHook Le_PostHook Le_RenewHook Le_Preferred_Chain Le_ReloadCmd"
+
 _DEBUG_WIKI="https://github.com/acmesh-official/acme.sh/wiki/How-to-debug-acme.sh"
 
 _PREPARE_LINK="https://github.com/acmesh-official/acme.sh/wiki/Install-preparations"
@@ -169,6 +175,8 @@ _SSLCOM_WIKI="https://github.com/acmesh-official/acme.sh/wiki/SSL.com-CA"
 _SERVER_WIKI="https://github.com/acmesh-official/acme.sh/wiki/Server"
 
 _PREFERRED_CHAIN_WIKI="https://github.com/acmesh-official/acme.sh/wiki/Preferred-Chain"
+
+_VALIDITY_WIKI="https://github.com/acmesh-official/acme.sh/wiki/Validity"
 
 _DNSCHECK_WIKI="https://github.com/acmesh-official/acme.sh/wiki/dnscheck"
 
@@ -429,21 +437,13 @@ _secure_debug3() {
 }
 
 _upper_case() {
-  if _is_solaris; then
-    tr '[:lower:]' '[:upper:]'
-  else
-    # shellcheck disable=SC2018,SC2019
-    tr 'a-z' 'A-Z'
-  fi
+  # shellcheck disable=SC2018,SC2019
+  tr '[a-z]' '[A-Z]'
 }
 
 _lower_case() {
-  if _is_solaris; then
-    tr '[:upper:]' '[:lower:]'
-  else
-    # shellcheck disable=SC2018,SC2019
-    tr 'A-Z' 'a-z'
-  fi
+  # shellcheck disable=SC2018,SC2019
+  tr '[A-Z]' '[a-z]'
 }
 
 _startswith() {
@@ -974,9 +974,9 @@ _base64() {
 #Usage: multiline
 _dbase64() {
   if [ "$1" ]; then
-    ${ACME_OPENSSL_BIN:-openssl} base64 -d -A
-  else
     ${ACME_OPENSSL_BIN:-openssl} base64 -d
+  else
+    ${ACME_OPENSSL_BIN:-openssl} base64 -d -A
   fi
 }
 
@@ -1051,9 +1051,9 @@ _sign() {
 
   _sign_openssl="${ACME_OPENSSL_BIN:-openssl} dgst -sign $keyfile "
 
-  if grep "BEGIN RSA PRIVATE KEY" "$keyfile" >/dev/null 2>&1 || grep "BEGIN PRIVATE KEY" "$keyfile" >/dev/null 2>&1; then
+  if _isRSA "$keyfile" >/dev/null 2>&1; then
     $_sign_openssl -$alg | _base64
-  elif grep "BEGIN EC PRIVATE KEY" "$keyfile" >/dev/null 2>&1; then
+  elif _isEcc "$keyfile" >/dev/null 2>&1; then
     if ! _signedECText="$($_sign_openssl -sha$__ECC_KEY_LEN | ${ACME_OPENSSL_BIN:-openssl} asn1parse -inform DER)"; then
       _err "Sign failed: $_sign_openssl"
       _err "Key file: $keyfile"
@@ -1139,13 +1139,19 @@ _createkey() {
 
   _debug "Use length $length"
 
-  if ! touch "$f" >/dev/null 2>&1; then
-    _f_path="$(dirname "$f")"
-    _debug _f_path "$_f_path"
-    if ! mkdir -p "$_f_path"; then
-      _err "Can not create path: $_f_path"
+  if ! [ -e "$f" ]; then
+    if ! touch "$f" >/dev/null 2>&1; then
+      _f_path="$(dirname "$f")"
+      _debug _f_path "$_f_path"
+      if ! mkdir -p "$_f_path"; then
+        _err "Can not create path: $_f_path"
+        return 1
+      fi
+    fi
+    if ! touch "$f" >/dev/null 2>&1; then
       return 1
     fi
+    chmod 600 "$f"
   fi
 
   if _isEccKey "$length"; then
@@ -1180,7 +1186,7 @@ _createkey() {
 _is_idn() {
   _is_idn_d="$1"
   _debug2 _is_idn_d "$_is_idn_d"
-  _idn_temp=$(printf "%s" "$_is_idn_d" | tr -d '0-9' | tr -d 'a-z' | tr -d 'A-Z' | tr -d '*.,-_')
+  _idn_temp=$(printf "%s" "$_is_idn_d" | tr -d '[0-9]' | tr -d '[a-z]' | tr -d '[A-Z]' | tr -d '*.,-_')
   _debug2 _idn_temp "$_idn_temp"
   [ "$_idn_temp" ]
 }
@@ -1250,8 +1256,9 @@ _createcsr() {
   else
     domainlist="$(_idn "$domainlist")"
     _debug2 domainlist "$domainlist"
-    alt="$(_getIdType "$domain" | _upper_case):$domain"
-    for dl in $(echo "$domainlist" | tr "," ' '); do
+    alt="$(_getIdType "$domain" | _upper_case):$(_idn "$domain")"
+    for dl in $(echo "'$domainlist'" | sed "s/,/' '/g"); do
+      dl=$(echo "$dl" | tr -d "'")
       alt="$alt,$(_getIdType "$dl" | _upper_case):$dl"
     done
     #multi
@@ -1270,9 +1277,17 @@ _createcsr() {
   _csr_cn="$(_idn "$domain")"
   _debug2 _csr_cn "$_csr_cn"
   if _contains "$(uname -a)" "MINGW"; then
-    ${ACME_OPENSSL_BIN:-openssl} req -new -sha256 -key "$csrkey" -subj "//CN=$_csr_cn" -config "$csrconf" -out "$csr"
+    if _isIP "$_csr_cn"; then
+      ${ACME_OPENSSL_BIN:-openssl} req -new -sha256 -key "$csrkey" -subj "//O=$PROJECT_NAME" -config "$csrconf" -out "$csr"
+    else
+      ${ACME_OPENSSL_BIN:-openssl} req -new -sha256 -key "$csrkey" -subj "//CN=$_csr_cn" -config "$csrconf" -out "$csr"
+    fi
   else
-    ${ACME_OPENSSL_BIN:-openssl} req -new -sha256 -key "$csrkey" -subj "/CN=$_csr_cn" -config "$csrconf" -out "$csr"
+    if _isIP "$_csr_cn"; then
+      ${ACME_OPENSSL_BIN:-openssl} req -new -sha256 -key "$csrkey" -subj "/O=$PROJECT_NAME" -config "$csrconf" -out "$csr"
+    else
+      ${ACME_OPENSSL_BIN:-openssl} req -new -sha256 -key "$csrkey" -subj "/CN=$_csr_cn" -config "$csrconf" -out "$csr"
+    fi
   fi
 }
 
@@ -1484,7 +1499,6 @@ _create_account_key() {
   else
     #generate account key
     if _createkey "$length" "$ACCOUNT_KEY_PATH"; then
-      chmod 600 "$ACCOUNT_KEY_PATH"
       _info "Create account key ok."
       return 0
     else
@@ -1582,23 +1596,22 @@ _durl_replace_base64() {
 
 _time2str() {
   #BSD
-  if date -u -r "$1" 2>/dev/null; then
+  if date -u -r "$1" -j "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null; then
     return
   fi
 
   #Linux
-  if date -u -d@"$1" 2>/dev/null; then
+  if date -u --date=@"$1" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null; then
     return
   fi
 
   #Solaris
-  if _exists adb; then
-    _t_s_a=$(echo "0t${1}=Y" | adb)
-    echo "$_t_s_a"
+  if printf "%(%Y-%m-%dT%H:%M:%SZ)T\n" $1 2>/dev/null; then
+    return
   fi
 
   #Busybox
-  if echo "$1" | awk '{ print strftime("%c", $0); }' 2>/dev/null; then
+  if echo "$1" | awk '{ print strftime("%Y-%m-%dT%H:%M:%SZ", $0); }' 2>/dev/null; then
     return
   fi
 }
@@ -1622,6 +1635,24 @@ _stat() {
 }
 
 #keyfile
+_isRSA() {
+  keyfile=$1
+  if grep "BEGIN RSA PRIVATE KEY" "$keyfile" >/dev/null 2>&1 || ${ACME_OPENSSL_BIN:-openssl} rsa -in "$keyfile" -noout -text | grep "^publicExponent:" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+#keyfile
+_isEcc() {
+  keyfile=$1
+  if grep "BEGIN EC PRIVATE KEY" "$keyfile" >/dev/null 2>&1 || ${ACME_OPENSSL_BIN:-openssl} ec -in "$keyfile" -noout -text 2>/dev/null | grep "^NIST CURVE:" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+#keyfile
 _calcjwk() {
   keyfile="$1"
   if [ -z "$keyfile" ]; then
@@ -1634,7 +1665,7 @@ _calcjwk() {
     return 0
   fi
 
-  if grep "BEGIN RSA PRIVATE KEY" "$keyfile" >/dev/null 2>&1; then
+  if _isRSA "$keyfile"; then
     _debug "RSA key"
     pub_exp=$(${ACME_OPENSSL_BIN:-openssl} rsa -in "$keyfile" -noout -text | grep "^publicExponent:" | cut -d '(' -f 2 | cut -d 'x' -f 2 | cut -d ')' -f 1)
     if [ "${#pub_exp}" = "5" ]; then
@@ -1656,7 +1687,7 @@ _calcjwk() {
     JWK_HEADER='{"alg": "RS256", "jwk": '$jwk'}'
     JWK_HEADERPLACE_PART1='{"nonce": "'
     JWK_HEADERPLACE_PART2='", "alg": "RS256"'
-  elif grep "BEGIN EC PRIVATE KEY" "$keyfile" >/dev/null 2>&1; then
+  elif _isEcc "$keyfile"; then
     _debug "EC key"
     crv="$(${ACME_OPENSSL_BIN:-openssl} ec -in "$keyfile" -noout -text 2>/dev/null | grep "^NIST CURVE:" | cut -d ":" -f 2 | tr -d " \r\n")"
     _debug3 crv "$crv"
@@ -1739,6 +1770,27 @@ _time() {
   date -u "+%s"
 }
 
+#support 2 formats:
+#    2022-04-01 08:10:33   to   1648800633
+#or  2022-04-01T08:10:33Z  to   1648800633
+_date2time() {
+  #Linux
+  if date -u -d "$(echo "$1" | tr -d "Z" | tr "T" ' ')" +"%s" 2>/dev/null; then
+    return
+  fi
+
+  #Solaris
+  if gdate -u -d "$(echo "$1" | tr -d "Z" | tr "T" ' ')" +"%s" 2>/dev/null; then
+    return
+  fi
+  #Mac/BSD
+  if date -u -j -f "%Y-%m-%d %H:%M:%S" "$(echo "$1" | tr -d "Z" | tr "T" ' ')" +"%s" 2>/dev/null; then
+    return
+  fi
+  _err "Can not parse _date2time $1"
+  return 1
+}
+
 _utc_date() {
   date -u "+%Y-%m-%d %H:%M:%S"
 }
@@ -1811,7 +1863,9 @@ _inithttp() {
       _ACME_WGET="$_ACME_WGET --max-redirect 0 "
     fi
     if [ "$DEBUG" ] && [ "$DEBUG" -ge "2" ]; then
-      _ACME_WGET="$_ACME_WGET -d "
+      if [ "$_ACME_WGET" ] && _contains "$($_ACME_WGET --help 2>&1)" "--debug"; then
+        _ACME_WGET="$_ACME_WGET -d "
+      fi
     fi
     if [ "$CA_PATH" ]; then
       _ACME_WGET="$_ACME_WGET --ca-directory=$CA_PATH "
@@ -1829,8 +1883,6 @@ _inithttp() {
 
 }
 
-_HTTP_MAX_RETRY=8
-
 # body  url [needbase64] [POST|PUT|DELETE] [ContentType]
 _post() {
   body="$1"
@@ -1838,33 +1890,6 @@ _post() {
   needbase64="$3"
   httpmethod="$4"
   _postContentType="$5"
-  _sleep_retry_sec=1
-  _http_retry_times=0
-  _hcode=0
-  while [ "${_http_retry_times}" -le "$_HTTP_MAX_RETRY" ]; do
-    [ "$_http_retry_times" = "$_HTTP_MAX_RETRY" ]
-    _lastHCode="$?"
-    _debug "Retrying post"
-    _post_impl "$body" "$_post_url" "$needbase64" "$httpmethod" "$_postContentType" "$_lastHCode"
-    _hcode="$?"
-    _debug _hcode "$_hcode"
-    if [ "$_hcode" = "0" ]; then
-      break
-    fi
-    _http_retry_times=$(_math $_http_retry_times + 1)
-    _sleep $_sleep_retry_sec
-  done
-  return $_hcode
-}
-
-# body  url [needbase64] [POST|PUT|DELETE] [ContentType] [displayError]
-_post_impl() {
-  body="$1"
-  _post_url="$2"
-  needbase64="$3"
-  httpmethod="$4"
-  _postContentType="$5"
-  displayError="$6"
 
   if [ -z "$httpmethod" ]; then
     httpmethod="POST"
@@ -1916,9 +1941,7 @@ _post_impl() {
     fi
     _ret="$?"
     if [ "$_ret" != "0" ]; then
-      if [ -z "$displayError" ] || [ "$displayError" = "0" ]; then
-        _err "Please refer to https://curl.haxx.se/libcurl/c/libcurl-errors.html for error code: $_ret"
-      fi
+      _err "Please refer to https://curl.haxx.se/libcurl/c/libcurl-errors.html for error code: $_ret"
       if [ "$DEBUG" ] && [ "$DEBUG" -ge "2" ]; then
         _err "Here is the curl dump log:"
         _err "$(cat "$_CURL_DUMP")"
@@ -1974,9 +1997,7 @@ _post_impl() {
       _debug "wget returns 8, the server returns a 'Bad request' response, lets process the response later."
     fi
     if [ "$_ret" != "0" ]; then
-      if [ -z "$displayError" ] || [ "$displayError" = "0" ]; then
-        _err "Please refer to https://www.gnu.org/software/wget/manual/html_node/Exit-Status.html for error code: $_ret"
-      fi
+      _err "Please refer to https://www.gnu.org/software/wget/manual/html_node/Exit-Status.html for error code: $_ret"
     fi
     _sed_i "s/^ *//g" "$HTTP_HEADER"
   else
@@ -1990,38 +2011,13 @@ _post_impl() {
 
 # url getheader timeout
 _get() {
-  url="$1"
-  onlyheader="$2"
-  t="$3"
-  _sleep_retry_sec=1
-  _http_retry_times=0
-  _hcode=0
-  while [ "${_http_retry_times}" -le "$_HTTP_MAX_RETRY" ]; do
-    [ "$_http_retry_times" = "$_HTTP_MAX_RETRY" ]
-    _lastHCode="$?"
-    _debug "Retrying GET"
-    _get_impl "$url" "$onlyheader" "$t" "$_lastHCode"
-    _hcode="$?"
-    _debug _hcode "$_hcode"
-    if [ "$_hcode" = "0" ]; then
-      break
-    fi
-    _http_retry_times=$(_math $_http_retry_times + 1)
-    _sleep $_sleep_retry_sec
-  done
-  return $_hcode
-}
-
-# url getheader timeout displayError
-_get_impl() {
   _debug GET
   url="$1"
   onlyheader="$2"
   t="$3"
-  displayError="$4"
   _debug url "$url"
   _debug "timeout=$t"
-  _debug "displayError" "$displayError"
+
   _inithttp
 
   if [ "$_ACME_CURL" ] && [ "${ACME_USE_WGET:-0}" = "0" ]; then
@@ -2040,9 +2036,7 @@ _get_impl() {
     fi
     ret=$?
     if [ "$ret" != "0" ]; then
-      if [ -z "$displayError" ] || [ "$displayError" = "0" ]; then
-        _err "Please refer to https://curl.haxx.se/libcurl/c/libcurl-errors.html for error code: $ret"
-      fi
+      _err "Please refer to https://curl.haxx.se/libcurl/c/libcurl-errors.html for error code: $ret"
       if [ "$DEBUG" ] && [ "$DEBUG" -ge "2" ]; then
         _err "Here is the curl dump log:"
         _err "$(cat "$_CURL_DUMP")"
@@ -2068,9 +2062,7 @@ _get_impl() {
       _debug "wget returns 8, the server returns a 'Bad request' response, lets process the response later."
     fi
     if [ "$ret" != "0" ]; then
-      if [ -z "$displayError" ] || [ "$displayError" = "0" ]; then
-        _err "Please refer to https://www.gnu.org/software/wget/manual/html_node/Exit-Status.html for error code: $ret"
-      fi
+      _err "Please refer to https://www.gnu.org/software/wget/manual/html_node/Exit-Status.html for error code: $ret"
     fi
   else
     ret=$?
@@ -2688,6 +2680,12 @@ _initAPI() {
   fi
   _err "Can not init api, for $_api_server"
   return 1
+}
+
+_clearCA() {
+  export CA_CONF=
+  export ACCOUNT_KEY_PATH=
+  export ACCOUNT_JSON_PATH=
 }
 
 #[domain]  [keylength or isEcc flag]
@@ -3779,7 +3777,7 @@ updateaccount() {
 
   _email="$(_getAccountEmail)"
 
-  if [ "$ACCOUNT_EMAIL" ]; then
+  if [ "$_email" ]; then
     updjson='{"contact": ["mailto:'$_email'"]}'
   else
     updjson='{"contact": []}'
@@ -3789,7 +3787,7 @@ updateaccount() {
 
   if [ "$code" = '200' ]; then
     echo "$response" >"$ACCOUNT_JSON_PATH"
-    _info "account update success for $_accUri."
+    _info "Account update success for $_accUri."
   else
     _info "Error. The account was not updated."
     return 1
@@ -4196,7 +4194,12 @@ _match_issuer() {
 #ip
 _isIPv4() {
   for seg in $(echo "$1" | tr '.' ' '); do
-    if [ $seg -ge 0 ] 2>/dev/null && [ $seg -le 255 ] 2>/dev/null; then
+    _debug2 seg "$seg"
+    if [ "$(echo "$seg" | tr -d '[0-9]')" ]; then
+      #not all number
+      return 1
+    fi
+    if [ $seg -ge 0 ] && [ $seg -lt 256 ]; then
       continue
     fi
     return 1
@@ -4220,6 +4223,40 @@ _getIdType() {
     echo "$ID_TYPE_IP"
   else
     echo "$ID_TYPE_DNS"
+  fi
+}
+
+# beginTime dateTo
+# beginTime is full string format("2022-04-01T08:10:33Z"), beginTime can be empty, to use current time
+# dateTo can be ether in full string format("2022-04-01T08:10:33Z") or in delta format(+5d or +20h)
+_convertValidaty() {
+  _beginTime="$1"
+  _dateTo="$2"
+  _debug2 "_beginTime" "$_beginTime"
+  _debug2 "_dateTo" "$_dateTo"
+
+  if _startswith "$_dateTo" "+"; then
+    _v_begin=$(_time)
+    if [ "$_beginTime" ]; then
+      _v_begin="$(_date2time "$_beginTime")"
+    fi
+    _debug2 "_v_begin" "$_v_begin"
+    if _endswith "$_dateTo" "h"; then
+      _v_end=$(_math "$_v_begin + 60 * 60 * $(echo "$_dateTo" | tr -d '+h')")
+    elif _endswith "$_dateTo" "d"; then
+      _v_end=$(_math "$_v_begin + 60 * 60 * 24 * $(echo "$_dateTo" | tr -d '+d')")
+    else
+      _err "Not recognized format for _dateTo: $_dateTo"
+      return 1
+    fi
+    _debug2 "_v_end" "$_v_end"
+    _time2str "$_v_end"
+  else
+    if [ "$(_time)" -gt "$(_date2time "$_dateTo")" ]; then
+      _err "The validaty to is in the past: _dateTo = $_dateTo"
+      return 1
+    fi
+    echo "$_dateTo"
   fi
 }
 
@@ -4256,6 +4293,8 @@ issue() {
   _local_addr="${13}"
   _challenge_alias="${14}"
   _preferred_chain="${15}"
+  _valid_from="${16}"
+  _valid_to="${17}"
 
   if [ -z "$_ACME_IS_RENEW" ]; then
     _initpath "$_main_domain" "$_key_length"
@@ -4275,11 +4314,24 @@ issue() {
     Le_NextRenewTime=$(_readdomainconf Le_NextRenewTime)
     _debug Le_NextRenewTime "$Le_NextRenewTime"
     if [ -z "$FORCE" ] && [ "$Le_NextRenewTime" ] && [ "$(_time)" -lt "$Le_NextRenewTime" ]; then
+      _valid_to_saved=$(_readdomainconf Le_Valid_to)
+      if [ "$_valid_to_saved" ] && ! _startswith "$_valid_to_saved" "+"; then
+        _info "The domain is set to be valid to: $_valid_to_saved"
+        _info "It can not be renewed automatically"
+        _info "See: $_VALIDITY_WIKI"
+        return $RENEW_SKIP
+      fi
       _saved_domain=$(_readdomainconf Le_Domain)
       _debug _saved_domain "$_saved_domain"
       _saved_alt=$(_readdomainconf Le_Alt)
       _debug _saved_alt "$_saved_alt"
-      if [ "$_saved_domain,$_saved_alt" = "$_main_domain,$_alt_domains" ]; then
+      _normized_saved_domains="$(echo "$_saved_domain,$_saved_alt" | tr "," "\n" | sort | tr '\n' ',')"
+      _debug _normized_saved_domains "$_normized_saved_domains"
+
+      _normized_domains="$(echo "$_main_domain,$_alt_domains" | tr "," "\n" | sort | tr '\n' ',')"
+      _debug _normized_domains "$_normized_domains"
+
+      if [ "$_normized_saved_domains" = "$_normized_domains" ]; then
         _info "Domains not changed."
         _info "Skip, Next renewal time is: $(__green "$(_readdomainconf Le_NextRenewTimeStr)")"
         _info "Add '$(__red '--force')' to force to renew."
@@ -4327,10 +4379,6 @@ issue() {
     _alt_domains=""
   fi
 
-  if [ "$_key_length" = "$NO_VALUE" ]; then
-    _key_length=""
-  fi
-
   if ! _on_before_issue "$_web_roots" "$_main_domain" "$_alt_domains" "$_pre_hook" "$_local_addr"; then
     _err "_on_before_issue."
     return 1
@@ -4351,7 +4399,13 @@ issue() {
   if [ -f "$CSR_PATH" ] && [ ! -f "$CERT_KEY_PATH" ]; then
     _info "Signing from existing CSR."
   else
+    # When renewing from an old version, the empty Le_Keylength means 2048.
+    # Note, do not use DEFAULT_DOMAIN_KEY_LENGTH as that value may change over
+    # time but an empty value implies 2048 specifically.
     _key=$(_readdomainconf Le_Keylength)
+    if [ -z "$_key" ]; then
+      _key=2048
+    fi
     _debug "Read key length:$_key"
     if [ ! -f "$CERT_KEY_PATH" ] || [ "$_key_length" != "$_key" ] || [ "$Le_ForceNewDomainKey" = "1" ]; then
       if ! createDomainKey "$_main_domain" "$_key_length"; then
@@ -4391,12 +4445,52 @@ issue() {
       _identifiers="$_identifiers,{\"type\":\"$(_getIdType "$d")\",\"value\":\"$(_idn "$d")\"}"
     done
     _debug2 _identifiers "$_identifiers"
-    if ! _send_signed_request "$ACME_NEW_ORDER" "{\"identifiers\": [$_identifiers]}"; then
+    _notBefore=""
+    _notAfter=""
+
+    if [ "$_valid_from" ]; then
+      _savedomainconf "Le_Valid_From" "$_valid_from"
+      _debug2 "_valid_from" "$_valid_from"
+      _notBefore="$(_convertValidaty "" "$_valid_from")"
+      if [ "$?" != "0" ]; then
+        _err "Can not parse _valid_from: $_valid_from"
+        return 1
+      fi
+      if [ "$(_time)" -gt "$(_date2time "$_notBefore")" ]; then
+        _notBefore=""
+      fi
+    else
+      _cleardomainconf "Le_Valid_From"
+    fi
+    _debug2 _notBefore "$_notBefore"
+
+    if [ "$_valid_to" ]; then
+      _debug2 "_valid_to" "$_valid_to"
+      _savedomainconf "Le_Valid_To" "$_valid_to"
+      _notAfter="$(_convertValidaty "$_notBefore" "$_valid_to")"
+      if [ "$?" != "0" ]; then
+        _err "Can not parse _valid_to: $_valid_to"
+        return 1
+      fi
+    else
+      _cleardomainconf "Le_Valid_To"
+    fi
+    _debug2 "_notAfter" "$_notAfter"
+
+    _newOrderObj="{\"identifiers\": [$_identifiers]"
+    if [ "$_notBefore" ]; then
+      _newOrderObj="$_newOrderObj,\"notBefore\": \"$_notBefore\""
+    fi
+    if [ "$_notAfter" ]; then
+      _newOrderObj="$_newOrderObj,\"notAfter\": \"$_notAfter\""
+    fi
+    if ! _send_signed_request "$ACME_NEW_ORDER" "$_newOrderObj}"; then
       _err "Create new order error."
       _clearup
       _on_issue_err "$_post_hook"
       return 1
     fi
+
     Le_LinkOrder="$(echo "$responseHeaders" | grep -i '^Location.*$' | _tail_n 1 | tr -d "\r\n " | cut -d ":" -f 2-)"
     _debug Le_LinkOrder "$Le_LinkOrder"
     Le_OrderFinalize="$(echo "$response" | _egrep_o '"finalize" *: *"[^"]*"' | cut -d '"' -f 4)"
@@ -4435,7 +4529,7 @@ issue() {
 
       response="$(echo "$response" | _normalizeJson)"
       _debug2 response "$response"
-      _d="$(echo "$response" | _egrep_o '"value" *: *"[^"]*"' | cut -d : -f 2 | tr -d ' "')"
+      _d="$(echo "$response" | _egrep_o '"value" *: *"[^"]*"' | cut -d : -f 2- | tr -d ' "')"
       if _contains "$response" "\"wildcard\" *: *true"; then
         _d="*.$_d"
       fi
@@ -4585,6 +4679,7 @@ $_authorizations_map"
           _dns_root_d="$(echo "$_dns_root_d" | sed 's/*.//')"
         fi
         _d_alias="$(_getfield "$_challenge_alias" "$_alias_index")"
+        test "$_d_alias" = "$NO_VALUE" && _d_alias=""
         _alias_index="$(_math "$_alias_index" + 1)"
         _debug "_d_alias" "$_d_alias"
         if [ "$_d_alias" ]; then
@@ -4660,7 +4755,9 @@ $_authorizations_map"
       _err "Please add the TXT records to the domains, and re-run with --renew."
       _on_issue_err "$_post_hook"
       _clearup
-      return 1
+      # If asked to be in manual DNS mode, flag this exit with a separate
+      # error so it can be distinguished from other failures.
+      return $CODE_DNS_MANUAL
     fi
 
   fi
@@ -4879,7 +4976,7 @@ $_authorizations_map"
         return 1
       fi
       _debug "sleep 2 secs to verify again"
-      sleep 2
+      _sleep 2
       _debug "checking"
 
       _send_signed_request "$uri"
@@ -5056,7 +5153,7 @@ $_authorizations_map"
   Le_CertCreateTime=$(_time)
   _savedomainconf "Le_CertCreateTime" "$Le_CertCreateTime"
 
-  Le_CertCreateTimeStr=$(date -u)
+  Le_CertCreateTimeStr=$(_time2str "$Le_CertCreateTime")
   _savedomainconf "Le_CertCreateTimeStr" "$Le_CertCreateTimeStr"
 
   if [ -z "$Le_RenewalDays" ] || [ "$Le_RenewalDays" -lt "0" ]; then
@@ -5096,13 +5193,34 @@ $_authorizations_map"
   else
     _cleardomainconf Le_ForceNewDomainKey
   fi
-
-  Le_NextRenewTime=$(_math "$Le_CertCreateTime" + "$Le_RenewalDays" \* 24 \* 60 \* 60)
-
-  Le_NextRenewTimeStr=$(_time2str "$Le_NextRenewTime")
+  if [ "$_notAfter" ]; then
+    Le_NextRenewTime=$(_date2time "$_notAfter")
+    Le_NextRenewTimeStr="$_notAfter"
+    if [ "$_valid_to" ] && ! _startswith "$_valid_to" "+"; then
+      _info "The domain is set to be valid to: $_valid_to"
+      _info "It can not be renewed automatically"
+      _info "See: $_VALIDITY_WIKI"
+    else
+      _now=$(_time)
+      _debug2 "_now" "$_now"
+      _lifetime=$(_math $Le_NextRenewTime - $_now)
+      _debug2 "_lifetime" "$_lifetime"
+      if [ $_lifetime -gt 86400 ]; then
+        #if lifetime is logner than one day, it will renew one day before
+        Le_NextRenewTime=$(_math $Le_NextRenewTime - 86400)
+        Le_NextRenewTimeStr=$(_time2str "$Le_NextRenewTime")
+      else
+        #if lifetime is less than 24 hours, it will renew one hour before
+        Le_NextRenewTime=$(_math $Le_NextRenewTime - 3600)
+        Le_NextRenewTimeStr=$(_time2str "$Le_NextRenewTime")
+      fi
+    fi
+  else
+    Le_NextRenewTime=$(_math "$Le_CertCreateTime" + "$Le_RenewalDays" \* 24 \* 60 \* 60)
+    Le_NextRenewTime=$(_math "$Le_NextRenewTime" - 86400)
+    Le_NextRenewTimeStr=$(_time2str "$Le_NextRenewTime")
+  fi
   _savedomainconf "Le_NextRenewTimeStr" "$Le_NextRenewTimeStr"
-
-  Le_NextRenewTime=$(_math "$Le_NextRenewTime" - 86400)
   _savedomainconf "Le_NextRenewTime" "$Le_NextRenewTime"
 
   if [ "$_real_cert$_real_key$_real_ca$_reload_cmd$_real_fullchain" ]; then
@@ -5138,18 +5256,21 @@ _split_cert_chain() {
   fi
 }
 
-#domain  [isEcc]
+#domain  [isEcc] [server]
 renew() {
   Le_Domain="$1"
   if [ -z "$Le_Domain" ]; then
-    _usage "Usage: $PROJECT_ENTRY --renew --domain <domain.tld> [--ecc]"
+    _usage "Usage: $PROJECT_ENTRY --renew --domain <domain.tld> [--ecc] [--server server]"
     return 1
   fi
 
   _isEcc="$2"
+  _renewServer="$3"
+  _debug "_renewServer" "$_renewServer"
 
   _initpath "$Le_Domain" "$_isEcc"
 
+  _set_level=${NOTIFY_LEVEL:-$NOTIFY_LEVEL_DEFAULT}
   _info "$(__green "Renew: '$Le_Domain'")"
   if [ ! -f "$DOMAIN_CONF" ]; then
     _info "'$Le_Domain' is not an issued domain, skip."
@@ -5162,28 +5283,43 @@ renew() {
 
   . "$DOMAIN_CONF"
   _debug Le_API "$Le_API"
-  if [ -z "$Le_API" ] || [ "$CA_LETSENCRYPT_V1" = "$Le_API" ]; then
-    #if this is from an old version, Le_API is empty,
-    #so, we force to use letsencrypt server
-    Le_API="$CA_LETSENCRYPT_V2"
-  fi
 
-  if [ "$Le_API" ]; then
-    if [ "$Le_API" != "$ACME_DIRECTORY" ]; then
-      _clearAPI
-    fi
-    export ACME_DIRECTORY="$Le_API"
-    #reload ca configs
-    ACCOUNT_KEY_PATH=""
-    ACCOUNT_JSON_PATH=""
-    CA_CONF=""
-    _debug3 "initpath again."
-    _initpath "$Le_Domain" "$_isEcc"
+  case "$Le_API" in
+  "$CA_LETSENCRYPT_V2_TEST")
+    _info "Switching back to $CA_LETSENCRYPT_V2"
+    Le_API="$CA_LETSENCRYPT_V2"
+    ;;
+  "$CA_BUYPASS_TEST")
+    _info "Switching back to $CA_BUYPASS"
+    Le_API="$CA_BUYPASS"
+    ;;
+  "$CA_GOOGLE_TEST")
+    _info "Switching back to $CA_GOOGLE"
+    Le_API="$CA_GOOGLE"
+    ;;
+  esac
+
+  if [ "$_server" ]; then
+    Le_API="$_server"
   fi
+  _info "Renew to Le_API=$Le_API"
+
+  _clearAPI
+  _clearCA
+  export ACME_DIRECTORY="$Le_API"
+
+  #reload ca configs
+  _debug2 "initpath again."
+  _initpath "$Le_Domain" "$_isEcc"
 
   if [ -z "$FORCE" ] && [ "$Le_NextRenewTime" ] && [ "$(_time)" -lt "$Le_NextRenewTime" ]; then
     _info "Skip, Next renewal time is: $(__green "$Le_NextRenewTimeStr")"
     _info "Add '$(__red '--force')' to force to renew."
+    if [ -z "$_ACME_IN_RENEWALL" ]; then
+      if [ $_set_level -ge $NOTIFY_LEVEL_SKIP ]; then
+        _send_notify "Renew $Le_Domain skipped" "Good, the cert is skipped." "$NOTIFY_HOOK" "$RENEW_SKIP"
+      fi
+    fi
     return "$RENEW_SKIP"
   fi
 
@@ -5198,7 +5334,14 @@ renew() {
   Le_PostHook="$(_readdomainconf Le_PostHook)"
   Le_RenewHook="$(_readdomainconf Le_RenewHook)"
   Le_Preferred_Chain="$(_readdomainconf Le_Preferred_Chain)"
-  issue "$Le_Webroot" "$Le_Domain" "$Le_Alt" "$Le_Keylength" "$Le_RealCertPath" "$Le_RealKeyPath" "$Le_RealCACertPath" "$Le_ReloadCmd" "$Le_RealFullChainPath" "$Le_PreHook" "$Le_PostHook" "$Le_RenewHook" "$Le_LocalAddress" "$Le_ChallengeAlias" "$Le_Preferred_Chain"
+  # When renewing from an old version, the empty Le_Keylength means 2048.
+  # Note, do not use DEFAULT_DOMAIN_KEY_LENGTH as that value may change over
+  # time but an empty value implies 2048 specifically.
+  Le_Keylength="$(_readdomainconf Le_Keylength)"
+  if [ -z "$Le_Keylength" ]; then
+    Le_Keylength=2048
+  fi
+  issue "$Le_Webroot" "$Le_Domain" "$Le_Alt" "$Le_Keylength" "$Le_RealCertPath" "$Le_RealKeyPath" "$Le_RealCACertPath" "$Le_ReloadCmd" "$Le_RealFullChainPath" "$Le_PreHook" "$Le_PostHook" "$Le_RenewHook" "$Le_LocalAddress" "$Le_ChallengeAlias" "$Le_Preferred_Chain" "$Le_Valid_From" "$Le_Valid_To"
   res="$?"
   if [ "$res" != "0" ]; then
     return "$res"
@@ -5210,15 +5353,31 @@ renew() {
   fi
 
   _ACME_IS_RENEW=""
+  if [ -z "$_ACME_IN_RENEWALL" ]; then
+    if [ "$res" = "0" ]; then
+      if [ $_set_level -ge $NOTIFY_LEVEL_RENEW ]; then
+        _send_notify "Renew $d success" "Good, the cert is renewed." "$NOTIFY_HOOK" 0
+      fi
+    else
+      if [ $_set_level -ge $NOTIFY_LEVEL_ERROR ]; then
+        _send_notify "Renew $d error" "There is an error." "$NOTIFY_HOOK" 1
+      fi
+    fi
+  fi
 
   return "$res"
 }
 
-#renewAll  [stopRenewOnError]
+#renewAll  [stopRenewOnError] [server]
 renewAll() {
   _initpath
+  _clearCA
   _stopRenewOnError="$1"
   _debug "_stopRenewOnError" "$_stopRenewOnError"
+
+  _server="$2"
+  _debug "_server" "$_server"
+
   _ret="0"
   _success_msg=""
   _error_msg=""
@@ -5227,6 +5386,7 @@ renewAll() {
   _notify_code=$RENEW_SKIP
   _set_level=${NOTIFY_LEVEL:-$NOTIFY_LEVEL_DEFAULT}
   _debug "_set_level" "$_set_level"
+  export _ACME_IN_RENEWALL=1
   for di in "${CERT_HOME}"/*.*/; do
     _debug di "$di"
     if ! [ -d "$di" ]; then
@@ -5240,7 +5400,7 @@ renewAll() {
         _isEcc=$(echo "$d" | cut -d "$ECC_SEP" -f 2)
         d=$(echo "$d" | cut -d "$ECC_SEP" -f 1)
       fi
-      renew "$d" "$_isEcc"
+      renew "$d" "$_isEcc" "$_server"
     )
     rc="$?"
     _debug "Return code: $rc"
@@ -5249,13 +5409,13 @@ renewAll() {
         _error_level="$NOTIFY_LEVEL_RENEW"
         _notify_code=0
       fi
-      if [ "$_ACME_IN_CRON" ]; then
-        if [ $_set_level -ge $NOTIFY_LEVEL_RENEW ]; then
-          if [ "$NOTIFY_MODE" = "$NOTIFY_MODE_CERT" ]; then
-            _send_notify "Renew $d success" "Good, the cert is renewed." "$NOTIFY_HOOK" 0
-          fi
+
+      if [ $_set_level -ge $NOTIFY_LEVEL_RENEW ]; then
+        if [ "$NOTIFY_MODE" = "$NOTIFY_MODE_CERT" ]; then
+          _send_notify "Renew $d success" "Good, the cert is renewed." "$NOTIFY_HOOK" 0
         fi
       fi
+
       _success_msg="${_success_msg}    $d
 "
     elif [ "$rc" = "$RENEW_SKIP" ]; then
@@ -5263,13 +5423,13 @@ renewAll() {
         _error_level="$NOTIFY_LEVEL_SKIP"
         _notify_code=$RENEW_SKIP
       fi
-      if [ "$_ACME_IN_CRON" ]; then
-        if [ $_set_level -ge $NOTIFY_LEVEL_SKIP ]; then
-          if [ "$NOTIFY_MODE" = "$NOTIFY_MODE_CERT" ]; then
-            _send_notify "Renew $d skipped" "Good, the cert is skipped." "$NOTIFY_HOOK" "$RENEW_SKIP"
-          fi
+
+      if [ $_set_level -ge $NOTIFY_LEVEL_SKIP ]; then
+        if [ "$NOTIFY_MODE" = "$NOTIFY_MODE_CERT" ]; then
+          _send_notify "Renew $d skipped" "Good, the cert is skipped." "$NOTIFY_HOOK" "$RENEW_SKIP"
         fi
       fi
+
       _info "Skipped $d"
       _skipped_msg="${_skipped_msg}    $d
 "
@@ -5278,13 +5438,13 @@ renewAll() {
         _error_level="$NOTIFY_LEVEL_ERROR"
         _notify_code=1
       fi
-      if [ "$_ACME_IN_CRON" ]; then
-        if [ $_set_level -ge $NOTIFY_LEVEL_ERROR ]; then
-          if [ "$NOTIFY_MODE" = "$NOTIFY_MODE_CERT" ]; then
-            _send_notify "Renew $d error" "There is an error." "$NOTIFY_HOOK" 1
-          fi
+
+      if [ $_set_level -ge $NOTIFY_LEVEL_ERROR ]; then
+        if [ "$NOTIFY_MODE" = "$NOTIFY_MODE_CERT" ]; then
+          _send_notify "Renew $d error" "There is an error." "$NOTIFY_HOOK" 1
         fi
       fi
+
       _error_msg="${_error_msg}    $d
 "
       if [ "$_stopRenewOnError" ]; then
@@ -5299,7 +5459,7 @@ renewAll() {
   done
   _debug _error_level "$_error_level"
   _debug _set_level "$_set_level"
-  if [ "$_ACME_IN_CRON" ] && [ $_error_level -le $_set_level ]; then
+  if [ $_error_level -le $_set_level ]; then
     if [ -z "$NOTIFY_MODE" ] || [ "$NOTIFY_MODE" = "$NOTIFY_MODE_BULK" ]; then
       _msg_subject="Renew"
       if [ "$_error_msg" ]; then
@@ -5406,9 +5566,12 @@ showcsr() {
   _initpath
 
   _csrsubj=$(_readSubjectFromCSR "$_csrfile")
-  if [ "$?" != "0" ] || [ -z "$_csrsubj" ]; then
+  if [ "$?" != "0" ]; then
     _err "Can not read subject from csr: $_csrfile"
     return 1
+  fi
+  if [ -z "$_csrsubj" ]; then
+    _info "The Subject is empty"
   fi
 
   _info "Subject=$_csrsubj"
@@ -5598,7 +5761,9 @@ _installcert() {
     if [ -f "$_real_cert" ] && [ ! "$_ACME_IS_RENEW" ]; then
       cp "$_real_cert" "$_backup_path/cert.bak"
     fi
-    cat "$CERT_PATH" >"$_real_cert" || return 1
+    if [ "$CERT_PATH" != "$_real_cert" ]; then
+      cat "$CERT_PATH" >"$_real_cert" || return 1
+    fi
   fi
 
   if [ "$_real_ca" ]; then
@@ -5610,7 +5775,9 @@ _installcert() {
       if [ -f "$_real_ca" ] && [ ! "$_ACME_IS_RENEW" ]; then
         cp "$_real_ca" "$_backup_path/ca.bak"
       fi
-      cat "$CA_CERT_PATH" >"$_real_ca" || return 1
+      if [ "$CA_CERT_PATH" != "$_real_ca" ]; then
+        cat "$CA_CERT_PATH" >"$_real_ca" || return 1
+      fi
     fi
   fi
 
@@ -5619,11 +5786,14 @@ _installcert() {
     if [ -f "$_real_key" ] && [ ! "$_ACME_IS_RENEW" ]; then
       cp "$_real_key" "$_backup_path/key.bak"
     fi
-    if [ -f "$_real_key" ]; then
-      cat "$CERT_KEY_PATH" >"$_real_key" || return 1
-    else
-      cat "$CERT_KEY_PATH" >"$_real_key" || return 1
-      chmod 600 "$_real_key"
+    if [ "$CERT_KEY_PATH" != "$_real_key" ]; then
+      if [ -f "$_real_key" ]; then
+        cat "$CERT_KEY_PATH" >"$_real_key" || return 1
+      else
+        touch "$_real_key" || return 1
+        chmod 600 "$_real_key"
+        cat "$CERT_KEY_PATH" >"$_real_key" || return 1
+      fi
     fi
   fi
 
@@ -5632,7 +5802,9 @@ _installcert() {
     if [ -f "$_real_fullchain" ] && [ ! "$_ACME_IS_RENEW" ]; then
       cp "$_real_fullchain" "$_backup_path/fullchain.bak"
     fi
-    cat "$CERT_FULLCHAIN_PATH" >"$_real_fullchain" || return 1
+    if [ "$_real_fullchain" != "$CERT_FULLCHAIN_PATH" ]; then
+      cat "$CERT_FULLCHAIN_PATH" >"$_real_fullchain" || return 1
+    fi
   fi
 
   if [ "$_reload_cmd" ]; then
@@ -5880,6 +6052,8 @@ revoke() {
       if [ -z "$response" ]; then
         _info "Revoke success."
         rm -f "$CERT_PATH"
+        cat "$CERT_KEY_PATH" >"$CERT_KEY_PATH.revoked"
+        cat "$CSR_PATH" >"$CSR_PATH.revoked"
         return 0
       else
         _err "Revoke error by domain key."
@@ -5896,6 +6070,8 @@ revoke() {
     if [ -z "$response" ]; then
       _info "Revoke success."
       rm -f "$CERT_PATH"
+      cat "$CERT_KEY_PATH" >"$CERT_KEY_PATH.revoked"
+      cat "$CSR_PATH" >"$CSR_PATH.revoked"
       return 0
     else
       _err "Revoke error."
@@ -6587,6 +6763,7 @@ Commands:
   --revoke                 Revoke a cert.
   --remove                 Remove the cert from list of certs known to $PROJECT_NAME.
   --list                   List all the certs.
+  --info                   Show the $PROJECT_NAME configs, or the configs for a domain with [-d domain] parameter.
   --to-pkcs12              Export the certificate and key to a pfx file.
   --to-pkcs8               Convert to pkcs8 format.
   --sign-csr               Issue a cert from an existing csr.
@@ -6619,6 +6796,11 @@ Parameters:
   --preferred-chain <chain>         If the CA offers multiple certificate chains, prefer the chain with an issuer matching this Subject Common Name.
                                     If no match, the default offered chain will be used. (default: empty)
                                     See: $_PREFERRED_CHAIN_WIKI
+
+  --valid-to    <date-time>         Request the NotAfter field of the cert.
+                                    See: $_VALIDITY_WIKI
+  --valid-from  <date-time>         Request the NotBefore field of the cert.
+                                    See: $_VALIDITY_WIKI
 
   -f, --force                       Force install, force cert renewal or override sudo restrictions.
   --staging, --test                 Use staging server, for testing.
@@ -6811,6 +6993,10 @@ _processAccountConf() {
 }
 
 _checkSudo() {
+  if [ -z "__INTERACTIVE" ]; then
+    #don't check if it's not in an interactive shell
+    return 0
+  fi
   if [ "$SUDO_GID" ] && [ "$SUDO_COMMAND" ] && [ "$SUDO_USER" ] && [ "$SUDO_UID" ]; then
     if [ "$SUDO_USER" = "root" ] && [ "$SUDO_UID" = "0" ]; then
       #it's root using sudo, no matter it's using sudo or not, just fine
@@ -6904,14 +7090,36 @@ setdefaultchain() {
   _savecaconf "DEFAULT_PREFERRED_CHAIN" "$_preferred_chain"
 }
 
+#domain ecc
+info() {
+  _domain="$1"
+  _ecc="$2"
+  _initpath
+  if [ -z "$_domain" ]; then
+    _debug "Show global configs"
+    echo "LE_WORKING_DIR=$LE_WORKING_DIR"
+    echo "LE_CONFIG_HOME=$LE_CONFIG_HOME"
+    cat "$ACCOUNT_CONF_PATH"
+  else
+    _debug "Show domain configs"
+    (
+      _initpath "$_domain" "$_ecc"
+      echo "DOMAIN_CONF=$DOMAIN_CONF"
+      for seg in $(cat $DOMAIN_CONF | cut -d = -f 1); do
+        echo "$seg=$(_readdomainconf "$seg")"
+      done
+    )
+  fi
+}
+
 _process() {
   _CMD=""
   _domain=""
   _altdomains="$NO_VALUE"
   _webroot=""
   _challenge_alias=""
-  _keylength=""
-  _accountkeylength=""
+  _keylength="$DEFAULT_DOMAIN_KEY_LENGTH"
+  _accountkeylength="$DEFAULT_ACCOUNT_KEY_LENGTH"
   _cert_file=""
   _key_file=""
   _ca_file=""
@@ -6958,6 +7166,8 @@ _process() {
   _eab_kid=""
   _eab_hmac_key=""
   _preferred_chain=""
+  _valid_from=""
+  _valid_to=""
   while [ ${#} -gt 0 ]; do
     case "${1}" in
 
@@ -7012,6 +7222,9 @@ _process() {
       ;;
     --list)
       _CMD="list"
+      ;;
+    --info)
+      _CMD="info"
       ;;
     --install-cronjob | --installcronjob)
       _CMD="installcronjob"
@@ -7262,6 +7475,14 @@ _process() {
       Le_RenewalDays="$_days"
       shift
       ;;
+    --valid-from)
+      _valid_from="$2"
+      shift
+      ;;
+    --valid-to)
+      _valid_to="$2"
+      shift
+      ;;
     --httpport)
       _httpport="$2"
       Le_HTTPPort="$_httpport"
@@ -7464,6 +7685,7 @@ _process() {
 
   if [ "$_server" ]; then
     _selectServer "$_server" "${_ecc:-$_keylength}"
+    _server="$ACME_DIRECTORY"
   fi
 
   if [ "${_CMD}" != "install" ]; then
@@ -7523,7 +7745,7 @@ _process() {
   uninstall) uninstall "$_nocron" ;;
   upgrade) upgrade ;;
   issue)
-    issue "$_webroot" "$_domain" "$_altdomains" "$_keylength" "$_cert_file" "$_key_file" "$_ca_file" "$_reloadcmd" "$_fullchain_file" "$_pre_hook" "$_post_hook" "$_renew_hook" "$_local_address" "$_challenge_alias" "$_preferred_chain"
+    issue "$_webroot" "$_domain" "$_altdomains" "$_keylength" "$_cert_file" "$_key_file" "$_ca_file" "$_reloadcmd" "$_fullchain_file" "$_pre_hook" "$_post_hook" "$_renew_hook" "$_local_address" "$_challenge_alias" "$_preferred_chain" "$_valid_from" "$_valid_to"
     ;;
   deploy)
     deploy "$_domain" "$_deploy_hook" "$_ecc"
@@ -7538,10 +7760,10 @@ _process() {
     installcert "$_domain" "$_cert_file" "$_key_file" "$_ca_file" "$_reloadcmd" "$_fullchain_file" "$_ecc"
     ;;
   renew)
-    renew "$_domain" "$_ecc"
+    renew "$_domain" "$_ecc" "$_server"
     ;;
   renewAll)
-    renewAll "$_stopRenewOnError"
+    renewAll "$_stopRenewOnError" "$_server"
     ;;
   revoke)
     revoke "$_domain" "$_ecc" "$_revoke_reason"
@@ -7563,6 +7785,9 @@ _process() {
     ;;
   list)
     list "$_listraw" "$_domain"
+    ;;
+  info)
+    info "$_domain" "$_ecc"
     ;;
   installcronjob) installcronjob "$_confighome" ;;
   uninstallcronjob) uninstallcronjob ;;
