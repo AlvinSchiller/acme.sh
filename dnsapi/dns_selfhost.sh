@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 #
-#       Author: Marvin Edeler
-#       Report Bugs here: https://github.com/Marvo2011/acme.sh/issues/1
+#      Author: Marvin Edeler
+#      Report Bugs here: https://github.com/Marvo2011/acme.sh/issues/1
 #	Last Edit: 17.02.2022
 
 dns_selfhost_add() {
