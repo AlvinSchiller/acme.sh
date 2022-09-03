@@ -82,6 +82,7 @@ jobs:
           echo "${{ secrets.TokenName5}}=${{ secrets.TokenValue5}}" >> docker.env
         fi
         echo "TEST_DNS_NO_WILDCARD" >> docker.env
+        echo "TEST_DNS_SLEEP" >> docker.env
         echo "http_proxy" >> docker.env
         echo "https_proxy" >> docker.env
     - name: Run acmetest
